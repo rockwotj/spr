@@ -13,7 +13,7 @@ use crate::{
     github::{PullRequestState, PullRequestUpdate, ReviewStatus},
     message::build_github_body_for_merging,
     output::{output, write_commit_title},
-    utils::run_command,
+    utils::run_command, utils::with_retries,
 };
 
 #[derive(Debug, clap::Parser)]
@@ -228,15 +228,17 @@ pub async fn land(
                 .reword("git push failed".to_string())?;
         }
 
-        gh.update_pull_request(
-            pull_request_number,
-            PullRequestUpdate {
-                base: Some(config.master_ref.on_github().to_string()),
-                ..Default::default()
-            },
-        )
-        .await?;
     }
+
+    // Always do this...
+    gh.update_pull_request(
+        pull_request_number,
+        PullRequestUpdate {
+            base: Some(config.master_ref.on_github().to_string()),
+            ..Default::default()
+        },
+    )
+        .await?;
 
     // Check whether GitHub says this PR is mergeable. This happens in a
     // retry-loop because recent changes to the Pull Request can mean that
@@ -298,31 +300,42 @@ pub async fn land(
 
     let result = match result {
         Ok(()) => {
-            // We have checked that merging the Pull Request branch into the master
-            // branch produces the intended result, and that's independent of whether we
-            // used a base branch with this Pull Request or not. We have made sure the
-            // target of the Pull Request is set to the master branch. So let GitHub do
-            // the merge now!
-            octocrab::instance()
-                .pulls(&config.owner, &config.repo)
-                .merge(pull_request_number)
-                .method(octocrab::params::pulls::MergeMethod::Squash)
-                .title(pull_request.title)
-                .message(build_github_body_for_merging(&pull_request.sections))
-                .sha(format!("{}", pr_head_oid))
-                .send()
-                .await
-                .convert()
-                .and_then(|merge| {
-                    if merge.merged {
-                        Ok(merge)
-                    } else {
-                        Err(Error::new(formatdoc!(
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                // We have checked that merging the Pull Request branch into the master
+                // branch produces the intended result, and that's independent of whether we
+                // used a base branch with this Pull Request or not. We have made sure the
+                // target of the Pull Request is set to the master branch. So let GitHub do
+                // the merge now!
+                let pull_result = octocrab::instance()
+                    .pulls(&config.owner, &config.repo)
+                    .merge(pull_request_number)
+                    .method(octocrab::params::pulls::MergeMethod::Squash)
+                    .title(pull_request.title.clone())
+                    .message(build_github_body_for_merging(&pull_request.sections))
+                    .sha(format!("{}", pr_head_oid))
+                    .send()
+                    .await
+                    .convert()
+                    .and_then(|merge| {
+                        if merge.merged {
+                            Ok(merge)
+                        } else {
+                            Err(Error::new(formatdoc!(
                             "GitHub Pull Request merge failed: {}",
                             merge.message.unwrap_or_default()
                         )))
-                    }
-                })
+                        }
+                    });
+
+                if pull_result.is_ok() || attempts >= 10 {
+                    break pull_result
+                }
+
+                // Wait one second before retrying
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         }
         Err(err) => Err(err),
     };
