@@ -13,7 +13,7 @@ use crate::{
     github::{PullRequestState, PullRequestUpdate, ReviewStatus},
     message::build_github_body_for_merging,
     output::{output, write_commit_title},
-    utils::run_command, utils::with_retries,
+    utils::run_command,
 };
 
 #[derive(Debug, clap::Parser)]
