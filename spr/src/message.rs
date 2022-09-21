@@ -186,7 +186,8 @@ pub fn build_github_body(section_texts: &MessageSectionsMap) -> String {
 pub fn build_github_body_for_merging(
     section_texts: &MessageSectionsMap,
 ) -> String {
-    build_message(
+    let regex = lazy_regex::regex!(r#"<a data-ca-tag.*?</a>"#);
+    let message = build_message(
         section_texts,
         &[
             MessageSection::Summary,
@@ -195,7 +196,8 @@ pub fn build_github_body_for_merging(
             MessageSection::ReviewedBy,
             MessageSection::PullRequest,
         ],
-    )
+    );
+    regex.replace(&message, "").to_string()
 }
 
 pub fn validate_commit_message(
