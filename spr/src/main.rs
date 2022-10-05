@@ -192,7 +192,7 @@ pub async fn spr() -> Result<()> {
         Commands::Amend(opts) => {
             commands::amend::amend(opts, &git, &mut gh, &config).await?
         }
-        Commands::List => commands::list::list(graphql_client, &config).await?,
+        Commands::List => commands::list::list(graphql_client, &git, &config).await?,
         Commands::Patch(opts) => {
             commands::patch::patch(opts, &git, &mut gh, &config).await?
         }

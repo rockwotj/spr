@@ -1,0 +1,11 @@
+query LookupReview($url: URI!) {
+  resource(url: $url) {
+    __typename
+    ... on PullRequest {
+      number
+      title
+      url
+      reviewDecision
+    }
+  }
+}

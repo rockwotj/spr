@@ -7,63 +7,75 @@
 
 use crate::error::Error;
 use crate::error::Result;
+use futures::future::try_join_all;
+use futures::future::TryFutureExt;
 use graphql_client::{GraphQLQuery, Response};
 use reqwest;
+use std::vec::Vec;
 
 #[allow(clippy::upper_case_acronyms)]
 type URI = String;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "src/gql/schema.docs.graphql",
-    query_path = "src/gql/open_reviews.graphql",
+    query_path = "src/gql/lookup_review.graphql",
     response_derives = "Debug"
 )]
-pub struct SearchQuery;
+pub struct LookupReview;
 
 pub async fn list(
     graphql_client: reqwest::Client,
+    git: &crate::git::Git,
     config: &crate::config::Config,
 ) -> Result<()> {
-    let variables = search_query::Variables {
-        query: format!(
-            "repo:{}/{} is:open is:pr author:@me archived:false",
-            config.owner, config.repo
-        ),
-    };
-    let request_body = SearchQuery::build_query(variables);
-    let res = graphql_client
-        .post("https://api.github.com/graphql")
-        .json(&request_body)
-        .send()
-        .await?;
-    let response_body: Response<search_query::ResponseData> =
-        res.json().await?;
+    let prepared_commits = git.get_prepared_commits(config)?;
 
-    print_pr_info(response_body).ok_or_else(|| Error::new("unexpected error"))
+    let responses: Vec<_> = prepared_commits
+        .iter()
+        .filter_map(|commit| commit.pull_request_number)
+        .map(|pr_number| {
+            let variables = lookup_review::Variables {
+                url: format!(
+                    "https://github.com/{}/{}/pull/{}",
+                    config.owner, config.repo, pr_number
+                ),
+            };
+            let request_body = LookupReview::build_query(variables);
+            graphql_client
+                .post("https://api.github.com/graphql")
+                .json(&request_body)
+                .send()
+                .and_then(|res| res.json())
+        })
+        .collect();
+
+    let response_bodies = try_join_all(responses).await?;
+
+    print_pr_info(response_bodies).ok_or_else(|| Error::new("unexpected error"))
 }
 
 fn print_pr_info(
-    response_body: Response<search_query::ResponseData>,
+    response_bodies: Vec<Response<lookup_review::ResponseData>>,
 ) -> Option<()> {
     let term = console::Term::stdout();
-    for pr in response_body.data?.search.nodes? {
-        let pr = match pr {
-            Some(crate::commands::list::search_query::SearchQuerySearchNodes::PullRequest(pr)) => pr,
+    for response in response_bodies {
+        let pr = match response.data?.resource {
+            Some(lookup_review::LookupReviewResource::PullRequest(pr)) => pr,
             _ => continue,
         };
         let dummy: String;
         let decision = match pr.review_decision {
-            Some(search_query::PullRequestReviewDecision::APPROVED) => {
+            Some(lookup_review::PullRequestReviewDecision::APPROVED) => {
                 console::style("Accepted").green()
             }
             Some(
-                search_query::PullRequestReviewDecision::CHANGES_REQUESTED,
+                lookup_review::PullRequestReviewDecision::CHANGES_REQUESTED,
             ) => console::style("Changes Needed").red(),
             None
-            | Some(search_query::PullRequestReviewDecision::REVIEW_REQUIRED) => {
+            | Some(lookup_review::PullRequestReviewDecision::REVIEW_REQUIRED) => {
                 console::style("Pending")
             }
-            Some(search_query::PullRequestReviewDecision::Other(d)) => {
+            Some(lookup_review::PullRequestReviewDecision::Other(d)) => {
                 dummy = d;
                 console::style(dummy.as_str())
             }
